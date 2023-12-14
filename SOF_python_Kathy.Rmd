@@ -1,0 +1,274 @@
+---
+title: "Test"
+author: "Kathy Wu"
+date: "1/16/2022"
+output: pdf_document
+---
+
+```{r setup, echo=FALSE}
+library(knitr)
+# set global chunk options: images will be 7x5 inches
+knitr::opts_chunk$set(fig.width=7, fig.height=5)
+options(digits = 4)
+
+## indents are for indenting r code as formatted text
+## They may need to be adjusted depending on your OS
+# if your output looks odd, increase or decrease indent
+indent1 = '    '
+indent2 = '        '
+indent3 = '            '
+```
+
+```{r include=FALSE}
+library(tidyr) 
+library(dplyr)
+library(lubridate)
+library(qpcR)
+```
+
+```{r}
+counts = read.csv("MLTollsStackOverflow.csv")
+python = counts[,5]
+```
+
+```{r}
+python.tr=python[1:120]
+python.te=python[121:132]
+```
+
+```{r}
+python.ts = ts(python.tr, start=c(2009,1), frequency=12)
+ts.plot(python.ts)
+```
+
+Transformation
+```{r}
+library(MASS)
+t = 1:length(python.tr)
+fit = lm(python.tr ~ t)
+bcTransform = boxcox(python.tr ~ t,plotit = TRUE, lambda = seq(0.5, 1, 0.01))
+
+lambda = bcTransform$x[which(bcTransform$y == max(bcTransform$y))]
+python.bc = (1/lambda)*(python.tr^lambda-1)
+```
+
+```{r}
+python.lam=(python.tr)^(lambda)
+# compare the original and boxcox transform
+op <- par(mfrow = c(1,2))
+ts.plot(python.tr, main = "Original data", ylab = expression(X[t]))
+#ts.plot(python.bc, main = "Box-Cox tranformed data", ylab = expression(Y[t]))
+ts.plot(python.lam, main = "lambda tranformed data", ylab = expression(Y[t]))
+```
+
+```{r}
+var(python.ts)
+#var(python.bc)
+var(python.lam)
+```
+
+De-seasonalize first, then de-trend
+```{r}
+python12=diff(python.lam, 12)
+plot(python12)
+```
+
+```{r}
+# plot the acf/pacf for deseasonalize dataset
+par(mfrow=c(1,2))
+acf(python12, lag.max=120)
+pacf(python12, lag.max=120)
+```
+
+```{r}
+# de-trend the data once
+python1 = diff(python12,1)
+plot(python1)
+
+# de-trend the data again
+python2 = diff(python1, 1)
+plot(python2)
+```
+
+```{r}
+# Check the variance
+var(python.lam)
+var(python12) # de-seasonal data
+var(python1) # deseasonal first, then trend
+var(python2)
+# increasing variance for second de-trend
+# d=1, D=1
+```
+
+```{r}
+par(mfrow=c(1,2))
+acf(python1, lag.max=120)
+pacf(python1, lag.max=120)
+```
+
+```{r}
+par(mfrow=c(1,2))
+acf(python1, lag.max=12)
+pacf(python1, lag.max=12)
+```
+
+
+Fit the model
+
+```{r eval=FALSE, include=FALSE}
+df = data.frame(p=c(), q=c(), P=c(), Q=c(), AICc=c()) 
+for (p in c(0,1)){
+  for (q in c(0,1)){
+    for (P in c(0)){
+      for (Q in c(0)){
+        AICc= AICc(arima(python12, order=c(p,1,q), 
+                     seasonal = list(order=c(P,1,Q), period=12), method="ML"))
+        df=rbind(df, data.frame(p,q,P,Q,AICc))
+      }
+    }
+  }
+}
+df
+```
+
+
+```{r eval=FALSE, include=FALSE}
+fit1=arima(python12, order=c(1,1,1), 
+                     seasonal = list(order = c(0,1,2), period = 12), method="ML")
+fit1
+#fixed=c(rep(0,11),NA,NA,NA,rep(0,9),NA,NA,NA, rep(0,2),NA,NA),
+#fixed=c(rep(0,6),NA,rep(0,5),NA,NA,NA),
+```
+
+```{r warning=FALSE}
+fit.coef=arima(python.lam, order=c(13,1,13), 
+               fixed=c(rep(0,6),NA,rep(0,5),NA,rep(0,12),NA,NA),
+               seasonal = list(order = c(0,1,1), period = 12), method="ML")
+```
+
+```{r}
+fit.coef
+```
+
+```{r}
+# Check invertibility for MA part
+#source("plot.roots.R")
+#plot.roots(NULL,c(1,rep(0,9),0.225,-1.154,0.962))
+polyroot(c(1,rep(0,9),0.225,-1.154,0.962))
+```
+
+```{r eval=FALSE, include=FALSE}
+#auto.arima(python1, d=1, D=1, max.p=13, max.q=33, max.P=1,max.Q=1, stationary=TRUE, seasonal=TRUE, max.order=11, method="ML")
+```
+
+```{r}
+# calculate the residual
+res1=residuals(fit.coef)
+#res2=residuals(fit2)
+```
+
+```{r}
+# plot the histogram of the residual
+hist(res1,density=20,breaks=20, col="blue", xlab="", prob=TRUE)
+m=mean(res1)
+std=sqrt(var(res1))
+curve(dnorm(x,m,std), add=TRUE)
+```
+
+```{r}
+# check if the residual performs white noise
+plot.ts(res1)
+fitt <- lm(res1 ~ as.numeric(1:length(res1)))
+abline(fitt, col="red")
+abline(h=mean(res1), col="blue")
+# Q-Q plot
+qqnorm(res1,main= "Normal Q-Q Plot for Model")
+qqline(res1,col="blue")
+```
+
+```{r}
+# plot the acf/pacf, small p and q
+#par(mfrow=c(1,2))
+#acf(res1, lag.max=48)
+#pacf(res1, lag.max=24)
+# plot the acf/pacf, big P and Q
+par(mfrow=c(1,2))
+acf(res1, lag.max=120)
+pacf(res1, lag.max=120)
+```
+
+```{r}
+# test if residual is normally distributed
+shapiro.test(res1)
+
+# Box test
+# lag= sqrt(number of observations)
+Box.test(res1, lag = 11, type = c("Box-Pierce"), fitdf = 4)
+Box.test(res1, lag = 11, type = c("Ljung-Box"), fitdf = 4)
+Box.test(res1^2, lag = 11, type = c("Ljung-Box"), fitdf = 0)
+acf(res1^2, lag.max=48)
+#pacf(res1^2, lag.max =48)
+ar(res1, aic = TRUE, order.max = NULL, method = c("yule-walker"))
+# the residual still shows a strong non-linear dependence 
+# although this model 
+```
+
+Forecast
+```{r}
+install.packages("forecast")
+library(forecast)
+```
+
+```{r}
+forecast(fit.coef) 
+pred.tr = predict(fit.coef, n.ahead = 12)
+```
+
+```{r}
+U.tr= pred.tr$pred + 2*pred.tr$se 
+L.tr= pred.tr$pred - 2*pred.tr$se
+```
+
+```{r}
+ts.plot(python.ch, xlim=c(0,132), ylim = c(min(python.lam),max(U.tr)))
+points((length(python.lam)+1):(length(python.lam)+12), pred.tr$pred, col="red")
+lines((length(python.lam)+1):(length(python.lam)+12), U.tr, col="blue", lty="dashed")
+lines((length(python.lam)+1):(length(python.lam)+12), L.tr, col="blue", lty="dashed")
+```
+
+```{r}
+#To produce graph with forecasts on original data:
+pred.orig = (pred.tr$pred)^(1/lambda)
+U= (U.tr)^(1/lambda)
+L= (L.tr)^(1/lambda)
+#ts.plot(python.tr, xlim=c(1,length(python.tr)+12), ylim = c(min(python.tr),max(U)))
+#lines((length(python.tr)+1):(length(python.tr)+12), U, col="blue", lty="dashed")
+#lines((length(python.tr)+1):(length(python.tr)+12), L, col="blue", lty="dashed")
+#points((length(python.tr)+1):(length(python.tr)+12), pred.orig, col="red")
+```
+
+```{r}
+ts.plot(python.tr, xlim=c(0,132), ylim = c(min(python.tr),max(U)))
+lines(121:132, U, col="blue", lty="dashed")
+lines(121:132, L, col="blue", lty="dashed")
+points(121:132, pred.orig, col="red")
+```
+
+```{r}
+# To zoom the graph, starting from entry 100:
+ts.plot(python, xlim = c(100,length(python.tr)+12), ylim = c(10000,max(U)))
+lines((length(python.tr)+1):(length(python.tr)+12), U, col="blue", lty="dashed")
+lines((length(python.tr)+1):(length(python.tr)+12), L, col="blue", lty="dashed")
+points((length(python.tr)+1):(length(python.tr)+12), pred.orig, col="red")
+```
+
+
+
+
+
+
+
+
+
+
+

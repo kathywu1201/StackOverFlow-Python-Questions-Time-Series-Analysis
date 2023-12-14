@@ -1,0 +1,459 @@
+---
+title: "StackOverFlow Python Questions Time Series Analysis"
+author: "Kathy Wu"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: pdf_document
+toc: true
+---
+
+```{r setup, echo=FALSE}
+library(knitr)
+knitr::opts_chunk$set(echo=FALSE,warning=FALSE, fig.width=7, fig.height=4, fig.align='center')
+options(digits = 6)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(tidyr) 
+library(dplyr)
+library(lubridate)
+library(qpcR)
+library(forecast)
+library(MASS)
+library(tseries)
+source("plot.roots.R")
+```
+
+```{r echo=FALSE}
+# loading the data
+counts = read.csv("MLTollsStackOverflow.csv")
+python = counts[,5]
+```
+
+\newpage
+# 1. Abstract 
+
+In this project, I will use the time series method I learned in PSTAT174 to analyze the StackOverFlow Question Counts from Kaggle. I use the data from 2009 to 2018 as the training data to fit a SARIMA Model, and use the data of 2019 as the test data to check the model fit. First, I visualized the data and determine if any transformation is needed to obtain a equal variance. Then, I plot the sample ACF and PACF to choose the candidate models. By selecting the best model that has the lowest AICc, I checked the ACF and PACF, normality, independence, non-linear dependence, and characteristic roots of the residuals to ensure the it follows the white noise process. Finally, I forecasted the StackOverFlow Python Question Counts in 2019 and compare it with the original data using the 95% Prediction Interval. \
+However, when checking the McLeod-Li Test for testing if the residuals has non-linear dependence, the result shows that there exists non-linear dependence, and there might be a non-linear model that fit the data better. As a result, I fit the most appropriate linear model that would provide the best forecast of the Python data.\
+
+# 2. Introduction 
+
+The StackOverFlow data was collected from Kaggle, which includes the number of question counts of various coding languages, algorithm, and specific libraries. I find this data set interesting is because nowadays programming languages become more and more popular among students and industry companies. The specific type of question I would like to focus is python. From analyzing the forecasted number of questions on python, while understanding the behavior of future number of questions related to python will be asked on StackOverFlow, we can not only know that Python is becoming more and more popular, but also recruit or call upon enough people to help others understand the python questions and may be able to publish more teaching materials about python. So, my goal is to use the SARIMA to fit a linear model and predict the future trend and seasonality of the Questions Counts.\
+Although in the end I fitted a linear model, the residuals still show strong non-linear dependence. I still try my best to fit the most appropriate linear model and forecast the future value, and the true test data appears to be within the prediction interval except one Nov.2019 observation. As a result, I think this model might have a better fit with the non-linear model.\
+
+# 3. Analyzing the Data Set
+
+## 3.1 Preview of the Python Data
+The data ranges from Jan.2009 to Dec.2019. I then split the data into training and test sets, which are Jan.2009 to Dec.2018 as the training set, and Jan.2019 to Dec.2019 as the test set. The partial data is shown below:
+```{r echo=FALSE}
+name=c('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec')
+py=python[1:12]
+df=data.frame(rbind(name, py))
+colnames(df)=c('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec')
+df[2,]
+```
+
+## 3.2 Plotting the Python Data 
+
+The time series plot of the Python Data is:\
+```{r echo=FALSE}
+# split into training and test data
+python.tr=python[1:120]
+python.te=python[121:132]
+# plot of the times series
+python.ts = ts(python.tr, start=c(2009,1), frequency=12)
+ts.plot(python.ts)
+title("StackOverFlow Python Question Counts, 2009-2019", font= 2)
+```
+\
+From the time series plotting above, we can see that the time series involves an upward trend and seasonality, and between the year 2018 and 2019, we can observe that there is relatively a small sharp increase in the time series. Furthermore, this time series may has unequal variance. So I choose to consider to apply the Box-Cox Transformation to check whether we need transformation to conduct a equal variance.
+
+## 3.3 Possible Transformation of the Python Data 
+
+The Box-Cox Transformation is shown below:\
+```{r echo=FALSE}
+t = 1:length(python.ts)
+fit = lm(python.ts ~ t)
+bcTransform = boxcox(python.ts ~ t,plotit = TRUE, lambda = seq(0.5, 1, 0.01))
+
+lambda = bcTransform$x[which(bcTransform$y == max(bcTransform$y))]
+```
+\
+Since the $95\%$ Confidence Interval of Box-Cox Transformation does not include 0 or 1, which means we would not choose log transformation or keep the original data set. Hence, I choose to take the power of $\lambda$ to the data set as the transformation.\
+\
+The histogram on the right-hand-side indicates that the variance is getting more consistent after transformation.\
+```{r echo=FALSE}
+python.lam=(python.ts)^(lambda)
+# compare the original and transform
+par(mfrow=c(1,2))
+hist(python.tr, col="#66CCFF")
+hist(python.lam, col="#66CCFF")
+```
+
+## 3.4 Difference the Python Data
+
+Since the previous time series plot shows seasonality, so I first choose to difference once at lag 12 to reduce the seasonality of the Python Data.\
+\
+```{r fig3, fig.height = 3,fig.width = 6}
+# difference at lag 12 once
+python12=diff(python.lam, 12)
+plot(python12)
+abline(h=mean(python12), col="red")
+title("Python Data Differenced at lag 12 once")
+```
+\
+However, the plot still appears non-stationary. Then, I choose to difference the Python Data at lag 1 once to remove the trend.\
+\
+```{r fig4, fig.height = 3,fig.width = 6, fig.align='center'}
+# de-trend the data once
+python1 = diff(python12,1)
+plot(python1)
+abline(h=mean(python1), col="red")
+title("Python Data Difference at lag 12 and lag 1")
+```
+Now, the plot seems stationary, but to further ensure that Python Data is stationary, I apply the Dickey-Fuller Test to check whether the Python Data is stationary. The null hypothesis of the Dickey-Fuller Test is that the series is not stationary. So in order to seek stationary, I want to have a p-value smaller than 0.05.
+```{r echo=FALSE, warning=FALSE}
+adf.test(python1)
+```
+Since the p-value results in 0.01 which is smaller than 0.05. Hence I reject the null hypothesis and conclude that the differenced Python Data is Stationary.
+
+## 3.5 Sample ACF and PACF Plot of Python Data
+
+I plot the ACF and PACF to prelimiary idenfy the candidates of the model.\
+```{r fig5, fig.height = 4,fig.width = 6, fig.align='center'}
+# acf
+acf(python1, lag.max=72)
+```
+
+```{r fig6, fig.height = 4,fig.width = 6, fig.align='center'}
+# pacf
+pacf(python1, lag.max=72)
+```
+\
+The sample ACF plot does not have statistical significance between lag 1 and lag 11, but it appears to have statistical significance at lag 12 and lag 13. The sample PACF plot does not have statistical significance between lag 1 and lag 11 as well, but it also appears to have statistical significance at lag 12 and lag 13. And the sample ACF and PACF plots appears to be very similar to each other. Hence, I suggest the model to have p=7,12,13, q=7,12,13 with no SMA and SAR or SARIMA model with p=7,13, q=1,7,13, P=1, Q=1, then check if any these obtain a lower AICc. I also choose p=7 and q=7 here, because lags 7 seems to be statistically significant since it is around the confidence Interval.\
+Furthermore, since lag 13 is a quite big number, so I choose to fit the whole model as p=13 and q=13 first, then select the only coefficients that the confidence interval does not include 0.
+
+# 4. Model Selection
+
+The following sections will present the AICc of the candidates model and choose the one model with the lowest AICc as the model.
+
+## 4.1 Checking AICc of the Candidates Model
+
+```{r echo=FALSE}
+# fit all possible values
+fit1=arima(python.lam, order=c(13,1,13), 
+               seasonal = list(order = c(0,1,0), period = 12), method="ML")
+```
+
+```{r echo=FALSE, warning=FALSE}
+fit2=arima(python.lam, order=c(13,1,13), 
+               fixed=c(rep(0,6),NA,rep(0,4),NA,NA,rep(0,6),NA,rep(0,4),NA,NA),
+               seasonal = list(order = c(0,1,0), period = 12), method="ML")
+```
+
+```{r echo=FALSE, warning=FALSE}
+fit3=arima(python.lam, order=c(13,1,12), 
+               fixed=c(rep(0,6),NA,rep(0,4),NA,NA,rep(0,6),NA,rep(0,4),NA),
+               seasonal = list(order = c(0,1,0), period = 12), method="ML")
+```
+
+```{r echo=FALSE, warning=FALSE}
+fit4=arima(python.lam, order=c(13,1,13), 
+               fixed=c(rep(0,6),NA,rep(0,5),NA,rep(0,12),NA,NA),
+               seasonal = list(order = c(0,1,1), period = 12), method="ML")
+```
+
+```{r echo=FALSE, warning=FALSE}
+fit5=arima(python.lam, order=c(13,1,13), 
+               fixed=c(rep(0,6),NA,rep(0,5),NA,rep(0,12),NA,NA,NA),
+               seasonal = list(order = c(1,1,1), period = 12), method="ML")
+```
+
+```{r echo=FALSE, warning=FALSE}
+fit6=arima(python.lam, order=c(13,1,1), 
+               fixed=c(rep(0,6),NA,rep(0,5),NA,NA,NA),
+               seasonal = list(order = c(0,1,1), period = 12), method="ML")
+```
+
+```{r echo=FALSE, warning=FALSE}
+fit7=arima(python.lam, order=c(13,1,13), 
+               fixed=c(rep(0,12),NA,rep(0,12),NA,NA),
+               seasonal = list(order = c(0,1,1), period = 12), method="ML")
+```
+
+```{r echo=FALSE, warning=FALSE}
+fit8=arima(python.lam, order=c(13,1,1), 
+               fixed=c(rep(0,12),NA,NA,NA),
+               seasonal = list(order = c(0,1,1), period = 12), method="ML")
+```
+
+```{r echo=FALSE, warning=FALSE}
+fit=arima(python.lam, order=c(1,1,1), 
+               fixed=c(NA,NA,NA,NA),
+               seasonal = list(order = c(1,1,1), period = 12), method="ML")
+```
+
+```{r}
+fit9=arima(python.lam, order=c(13,1,13), 
+               fixed=c(rep(0,11),NA,NA,rep(0,11),NA,NA),
+               seasonal = list(order = c(0,1,0), period = 12), method="ML")
+```
+
+```{r}
+fit10=arima(python.lam, order=c(13,1,0),
+            fixed=c(rep(0,12),NA,NA),
+            seasonal = list(order = c(0,1,1), period = 12), method="ML")
+```
+
+```{r}
+fit11=arima(python.lam, order=c(13,1,0), 
+            fixed=c(rep(0,6),NA,rep(0,5),NA,NA),
+            seasonal = list(order = c(0,1,1), period = 12), method="ML")
+```
+
+```{r}
+fit12=arima(python.lam, order=c(13,1,0), 
+            fixed=c(rep(0,6),NA,rep(0,4),NA,NA),
+            seasonal = list(order = c(0,1,0), period = 12), method="ML")
+```
+
+AICc of the Candidates Models:
+```{r echo=FALSE}
+model.name=c('1. SARIMA(1,1,1)(1,1,1)_12',
+             '2. SARIMA(13,1,13)(0,1,0)_12', 
+             '3. SARIMA(13,1,13)(0,1,0)_12 with Coef. ar7,12,13, ma7,12,13',
+             '4. SARIMA(13,1,12)(0,1,0)_12 with Coef. ar7,12,13, ma7,12',
+             '5. SARIMA(13,1,13)(0,1,1)_12 with Coef. ar7,13, ma13, sma1',
+             '6. SARIMA(13,1,12)(1,1,1)_12 with Coef. ar7,13, ma13, sar1, sma1',
+             '7. SARIMA(13,1,1)(0,1,1)_12 with Coef. ar7,13, ma1, sma1',
+             '8. SARIMA(13,1,13)(0,1,1)_12 with Coef. ar13, ma13, sma1',
+             '9. SARIMA(13,1,1)(0,1,1)_12 with Coef. ar13, ma1, sma1',
+             '10. SARIMA(13,1,13)(0,1,0)_12 with Coef. ar12,13, ma12,13',
+             '11. SARIMA(13,1,0)(0,1,1)_12 with Coef. ar13, sma1',
+             '12. SARIMA(13,1,0)(0,1,1)_12 with Coef. ar7,13, sma1',
+             '13. SARIMA(13,1,0)(0,1,0)_12 with Coef. ar7,12,13')
+AICc=c(AICc(fit),AICc(fit1), AICc(fit2), AICc(fit3), AICc(fit4), 
+       AICc(fit5), AICc(fit6), AICc(fit7) ,AICc(fit8), AICc(fit9),
+       AICc(fit10), AICc(fit11),AICc(fit12))
+aicc.table=matrix(AICc, nrow=13, ncol=1)
+rownames(aicc.table)=model.name
+colnames(aicc.table)=c('AICc')
+```
+
+```{r}
+# table
+knitr::kable(aicc.table, caption = "AICc of the Candidates Models")
+```
+
+By comparing the AICc of the candidates models, I choose the 7th model with AICc=`r AICc(fit6)` as __Model A__ and 12th model with AICc=`r AICc(fit11)` as __Model B__, since these two models both have AICc=1036.\
+\
+The fitted __model A__ is displyed below:
+```{r echo=FALSE}
+fit6
+```
+
+Hence, the __selected model A__ is:
+$$
+\begin{aligned}
+(1+0.154B^7+0.333B^{13})(1-B)(1-B^{12})X_t&=(1-0.151B)(1-0.430B^{12})Z_t\\
+\end{aligned}
+$$
+with $\hat \sigma_Z=790$.\
+------------------------------------\
+The fitted __model B__ is displyed below:
+```{r}
+fit11
+```
+Hence, the __selected model B__ is:
+$$
+\begin{aligned}
+(1+0.157B^7+0.309B^{13})(1-B)(1-B^{12})X_t&=(1-0.431B^{12})Z_t\\
+\end{aligned}
+$$
+with $\hat \sigma_Z=810$.
+
+## 4.2 Checking the Model Roots
+
+In this part, I will check if the MA and SMA parts are invertible for both __Model A__ and __Model B__.\
+\
+__Model A:__\
+Checking the Root for __MA__ and __SMA__ Part:\
+$1-0.151B=0$ and $1-0.43B^{12}=0$\
+Since the coefficients of MA1 $|\theta_1|=|-0.151|=0.151<1$ and SMA1 $|\Theta_1|=|-0.430|=0.430<1$. And according to the definition of invertibility for MA(1) and SMA(1), I can conclude that this model A is __Invertible__.\
+------------------------------------\
+__Model B:__\
+Checking the Root for __SMA__ Part:\
+$1-0.431B^{12}=0$\
+Since the coefficient of SMA1 $|\Theta_1|=|-0.431|=0.431<1$. And according to the definition of invertibility for SMA(1), I can conclude that this model B is __Invertible__.
+
+# 5. Model Diagnostics
+
+After the selecting the best model that would fit the Python Data, I continue to check the residuals of the fitted model to make sure the model works well.
+
+## 5.1 Checking the Time Series Plot, ACF, and PACF of the Residuals
+
+The time series plot, ACF, PACF of residuals of __Model A__:
+```{r}
+# acf/pacf
+res_A=residuals(fit6)
+plot.ts(res_A)
+abline(h=mean(res_A), col="red")
+title('Time Series Plot of the Residuals of Model A')
+par(mfrow=c(1,2))
+acf(res_A, lag.max=60)
+pacf(res_A, lag.max=60)
+```
+\bigskip
+
+The time series plot, ACF, PACF of residuals of __Model B__:
+```{r}
+# acf/pacf
+res_B=residuals(fit11)
+plot.ts(res_B)
+abline(h=mean(res_B), col="red")
+title('Time Series Plot of the Residuals of Model B')
+par(mfrow=c(1,2))
+acf(res_B, lag.max=60)
+pacf(res_B, lag.max=60)
+```
+
+From all the plots of these two models, I can see that he Time Series Plots of the Residuals have no trend, no visible change of variance, and no seasonality,and looks like white noise process, and the PACF of the residuals are all within the Confidence Interval and can be counted as zero. However, from both ACF plots of the residuals, $\hat \rho (44)$ are outside the Confidence Interval. Since the blue dash lines represents the $95\%$ Confidence Interval, I would accept the spike at $\hat \rho(44)$ and consider the residuals of the fitted model might perform white noise process.\
+\
+Then I continue to check if the residuals of these model would fit an AR(0) model.\
+\
+For __Model A__, I can see that by plugging the fitted model residuals to the Yuler-Walker's method to see if the residual could fit in a AR(0) model (white nosie).
+```{r}
+# check is the residual fit the ar model, white noise
+ar(res_A, aic = TRUE, order.max = NULL, method = c("yule-walker"))
+```
+Since automatically selected order is 0, which means the residuals of __Model A__ follows a white noise process.\
+------------------------------------\
+For __Model B__, I can see that by plugging the fitted model residuals to the Yuler-Walker's method to see if the residual could fit in a AR(0) model (white nosie).
+```{r}
+ar(res_B, aic = TRUE, order.max = NULL, method = c("yule-walker"))
+```
+Since automatically selected order is 0, which means the residuals of __Model B__ does not fit into AR(0) and it does now shows white noise process.\
+As a result, I will continue the diagnostic process with only __Model A__.
+
+## 5.2 Normality
+
+Checking if the residuals of __model A__ are distributed noramlly.\
+```{r echo=FALSE}
+# normality, model A
+hist(res_A,density=20,breaks=20, col="blue", xlab="", prob=TRUE)
+m=mean(res_A)
+std=sqrt(var(res_A))
+curve(dnorm(x,m,std), add=TRUE)
+# Q-Q plot
+qqnorm(res_A,main= "Normal Q-Q Plot for Model")
+qqline(res_A,col="blue")
+# test if residual is normally distributed
+shapiro=shapiro.test(res_A)
+```
+
+__Shapiro-Wilk Normality Test__\
+Null Hypothesis: the variable is normally distributed is some population.
+```{r}
+shapiro.tb=matrix(c(shapiro$p.value),nrow=1,ncol=1)
+rownames(shapiro.tb)=c('Shapiro-Wilk Test')
+colnames(shapiro.tb)=c('P-value')
+knitr::kable(shapiro.tb, caption = "Shapiro-Wilk Normality Test of Model A")
+```
+Since the p-value of the Shapiro test is larger than the significant value 0.05, then I do not need to reject the null hypothesis and conclude that the residuals are normally distributed.
+
+## 5.3 Residual Independence
+
+The number of observations in the Python Data is 120, I would consider $h=\sqrt{120} \approx 11$.\
+\
+__Box-Pierce:__ With degrees of freedom of 7.\
+__Ljung-Box:__ With degrees of freedom of 7.\
+__Mc-Leod Li:__ With degrees of freedom of 11.\
+
+```{r echo=FALSE}
+# residual independence
+# Box test
+# lag= sqrt(number of observations)
+box.pierce=Box.test(res_A, lag = 11, type = c("Box-Pierce"), fitdf = 4)
+ljung.box=Box.test(res_A, lag = 11, type = c("Ljung-Box"), fitdf = 4)
+mcleod.li=Box.test(res_A^2, lag = 11, type = c("Ljung-Box"), fitdf = 0)
+```
+
+```{r echo=FALSE}
+boxnames=c('Box-Pierce','Ljung-Box','Mc-Leod Li')
+boxtest=matrix(c(box.pierce$p.value,ljung.box$p.value,mcleod.li$p.value),nrow=3, ncol=1)
+rownames(boxtest)=boxnames
+colnames(boxtest)=c('P-value')
+# table
+knitr::kable(boxtest, caption = "Box Test of Model A")
+```
+
+The above table indicates that the __Box-Pierce Test__ and __Ljung-Box Test__ pass becasue the p-value of these two tests is larger than the significant value 0.05. However, the __Mc-Leod Li Test__ does not seem passing which shows non-linear dependence of the residuals.\
+\
+The following graph is the ACF plot of the residuals of the fitted model:
+```{r fig, fig.width=7, fig.height=4}
+# acf plot of res to check the non-linear dependence
+acf(res_A^2, lag.max=48)
+```
+
+The ACF plot of the residuals demonstrates that the residual^2 has non-linear dependence, while the Mcleod-Li Test also shows that the p-value of the test is smaller than the significant value. However, I've tried other models but all of them shows non-linear dependence of the residuals. Hence, some non-linear models might needed to provide a better fit of this model.\
+To give some suggestions to solve the Mcleod-Li Test problem, I would suggest that choosing to add the arch-garch model or other non-linear models in the time series.
+
+# 6. Forecast
+
+Even though the the residuals of the fitted model shows non-linear dependence and non-linear models might be required, I try to forecast the currently best-selected linear model.\
+\
+The following plot displays the 12-month forecast value and its $95\%$ prediction interval:
+```{r include=FALSE, echo=FALSE}
+forecast(fit6) 
+pred.tr = predict(fit6, n.ahead = 12)
+```
+
+```{r fig9,fig.width=7, fig.height=5}
+python.ld=python.tr^(lambda)
+# CI
+U.tr= pred.tr$pred + 2*pred.tr$se 
+L.tr= pred.tr$pred - 2*pred.tr$se
+# change to the original data
+pred.orig = (pred.tr$pred)^(1/lambda)
+U= (U.tr)^(1/lambda)
+L= (L.tr)^(1/lambda)
+# plot
+ts.plot(python.tr, xlim=c(0,132), ylim = c(min(python.tr),max(U)))
+lines((length(python.tr)+1):(length(python.tr)+12), U, col="blue", lty="dashed")
+lines((length(python.tr)+1):(length(python.tr)+12), L, col="blue", lty="dashed")
+points((length(python.tr)+1):(length(python.tr)+12), pred.orig, col="red", pch=10)
+title("Forecast of the Python Question Counts with Original Data")
+```
+
+Then I add the test data set and compared with the predicted values, and its $95\%$ prediction interval:
+```{r fig13, fig.width=7, fig.height=5}
+# To zoom the graph, starting from entry 100:
+ts.plot(python, xlim = c(100,length(python.tr)+12), ylim = c(10000,max(U)))
+lines((length(python.tr)+1):(length(python.tr)+12), U, col="blue", lty="dashed")
+lines((length(python.tr)+1):(length(python.tr)+12), L, col="blue", lty="dashed")
+points((length(python.tr)+1):(length(python.tr)+12), pred.orig, col="red", pch=10)
+title("Forecasst of the Python Question Counts with Original Data (Zoom-in)")
+```
+The above plot displays the whole Python data, including both the training and testing sets. Comparing with the $95\%$ prediction interval, since all the test data are within the interval except the Nov.2019 observation. Since this is a $95\%$ prediction interval, I can conclude that although there exists non-linear dependence in the fitted model residuals, the model can be considered as an appropriate linear model.
+
+# 7. Conclusion
+
+By doing this time series forecast, I achieve my goal by fitting an appropriate linear model and forecast the future Python Question Counts.\ 
+Throughout this project, I utilize the time series methods that I learned in PSTAT174 to fit an appropriate linear model, applying the Box-Cox Transformation lambda to set the transformation method, checking the ACF and PACF to consider candidates models. The two possible models are:\
+__Model A:__
+$$(1+0.154B^7+0.33B^{13})(1-B)(1-B^{12})X_t=(1-0.151B)(1-0.430B^{12})Z_t$$
+__Model B:__\
+$$(1+0.157B^7+0.309B^{13})(1-B)(1-B^{12})X_t=(1-0.431B^{12})Z_t$$
+Then I apply the model diagnostics to check if the residuals of these two models behave as what I expected. And I find out that __Model A__ appears to be a better model. However, the Python Data results in some necessary non-linear model might be needed to obtain a better model. Finally, I proceed to the forecast process and plot the $95\%$ prediction interval of the 2019 Python Question Counts.\
+Last but not least, I want to thank professor Feldman for taking time helping me with the model fit and dealing with the non-linear dependence of the residuals. And TA Youhong Lee and TA Sunpeng Duan who helped me lot when I had problems fitting the model.
+
+# 8. References
+
+1. StackOverflow Questions Count Time Series, Kaggle. https://www.kaggle.com/aishu200023/stackindex
+2. PSTAT 174 Lecture slides, Lecture Notes, Labs
+3. Special thanks to Professor Feldman, TA Youhong Lee and TA Sunpeng Duan.
+
+# *Appendix: R code*
+
+```{r, echo=TRUE, eval=FALSE, ref.label=knitr::all_labels()}
+```
+
